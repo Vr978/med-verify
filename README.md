@@ -10,6 +10,7 @@
 [![MongoDB](https://img.shields.io/badge/MongoDB-7.0-47A248?style=for-the-badge&logo=mongodb&logoColor=white)](https://mongodb.com)
 [![Docker](https://img.shields.io/badge/Docker-Multi--stage-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://docker.com)
 [![Kubernetes](https://img.shields.io/badge/GKE-Kubernetes-326CE5?style=for-the-badge&logo=kubernetes&logoColor=white)](https://cloud.google.com/kubernetes-engine)
+[![Jenkins](https://img.shields.io/badge/Jenkins-CI%2FCD-D33833?style=for-the-badge&logo=jenkins&logoColor=white)](Jenkinsfile)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
 
 </div>
@@ -274,6 +275,36 @@ A background scheduler (APScheduler, every 2 min) auto-expires rounds. All block
 | Orchestration | Google Kubernetes Engine, HPA, PVC |
 | Auth | JWT (access + refresh), bcrypt, PyNaCl |
 | Hashing | SHA-256 (hashlib), HMAC constant-time compare |
+
+---
+
+## CI/CD — Jenkins Pipeline
+
+The [`Jenkinsfile`](Jenkinsfile) at the repo root defines a **declarative Jenkins pipeline** that fully automates the build, test, and deploy cycle to GKE.
+
+```
+Push to main
+    │
+    ▼
+1. Checkout          — clone repo, log branch + commit SHA
+2. Lint & Validate   — kubectl apply --dry-run=client on all k8s/ manifests
+3. Test              — run BatchValidator SHA-256 self-test (gates the build)
+4. Build Images      — parallel docker build for backend + fl_backend (multi-stage)
+5. Push to GCR       — push :BUILD_NUMBER-SHA and :latest tags to Google Container Registry
+6. Deploy to GKE     — kubectl set image for rolling zero-downtime update
+7. Verify Rollout    — kubectl rollout status (180s timeout) + pod/HPA status report
+```
+
+**Key Jenkins credentials required** (set in Manage Jenkins → Credentials):
+
+| Credential ID | Type | Purpose |
+|---|---|---|
+| `GCP_SA_KEY` | Secret File | GCP service account JSON for `gcloud` auth |
+| `GCP_PROJECT_ID` | Secret Text | GCP project for GCR image paths |
+| `GKE_CLUSTER_NAME` | Secret Text | Target GKE cluster name |
+| `GKE_ZONE` | Secret Text | GKE zone (e.g. `us-central1-a`) |
+
+The pipeline is **branch-aware** — image push and GKE deploy only run on `main` or version tags (`v*.*.*`), so feature branches only run lint + test + build.
 
 ---
 
