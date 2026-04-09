@@ -1,0 +1,111 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MedVerify — Local Development Orchestration
+# Mirrors the GKE production topology:
+#   • mongodb   — immutable ledger (model hashes, blocks, elections)
+#   • backend   — DPoS Blockchain API  (FastAPI, port 8000)
+#   • fl-backend — FL Aggregator/Client microservice (FastAPI, port 8500)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ── MongoDB ────────────────────────────────────────────────────────────────
+  mongodb:
+    image: mongo:7.0
+    container_name: medverify-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-admin}
+      MONGO_INITDB_DATABASE: ${MONGO_DB:-medverify-authdb}
+    volumes:
+      - mongo_data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/init.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks:
+      - medverify-net
+
+  # ── DPoS Blockchain API ────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: medverify-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env.example   # copy to .env and fill in secrets
+    environment:
+      MONGO_HOST: mongodb
+      MONGO_PORT: "27017"
+      MONGO_USER: ${MONGO_USER:-admin}
+      MONGO_PASSWORD: ${MONGO_PASSWORD:-admin}
+      MONGO_DB: ${MONGO_DB:-medverify-authdb}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - medverify-net
+
+  # ── FL Aggregator Microservice ─────────────────────────────────────────────
+  fl-backend:
+    build:
+      context: ./fl_backend
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: medverify-fl-backend
+    restart: unless-stopped
+    ports:
+      - "8500:8500"
+    environment:
+      NODE_ROLE: hybrid
+      FL_BACKEND_HOST: "0.0.0.0"
+      FL_BACKEND_PORT: "8500"
+      BACKEND_API_URL: "http://backend:8000"
+      PRIVATE_KEY_HOSPITAL_A: ${PRIVATE_KEY_HOSPITAL_A:-}
+      PRIVATE_KEY_HOSPITAL_B: ${PRIVATE_KEY_HOSPITAL_B:-}
+      PRIVATE_KEY_HOSPITAL_C: ${PRIVATE_KEY_HOSPITAL_C:-}
+    volumes:
+      - fl_models:/app/tmp_models
+      - fl_datasets:/app/dataset_cache
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8500/fl/status')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - medverify-net
+
+# ─── Named Volumes ────────────────────────────────────────────────────────────
+volumes:
+  mongo_data:
+    driver: local
+  fl_models:
+    driver: local
+  fl_datasets:
+    driver: local
+
+# ─── Network ──────────────────────────────────────────────────────────────────
+networks:
+  medverify-net:
+    driver: bridge

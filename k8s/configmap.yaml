@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: medverify-config
+  namespace: medverify
+  labels:
+    app: medverify
+data:
+  # MongoDB connection
+  MONGO_HOST: "medverify-mongodb-service"
+  MONGO_PORT: "27017"
+  MONGO_DB: "medverify-authdb"
+
+  # JWT settings
+  JWT_ALGORITHM: "HS256"
+  JWT_AUD: "integrity-fl"
+  JWT_ISS: "integrity-fl"
+  JWT_ACCESS_EXPIRES_MINUTES: "15"
+  JWT_REFRESH_EXPIRES_DAYS: "7"
+  MAX_ACTIVE_SESSIONS: "5"
+
+  # Logging
+  LOG_LEVEL: "INFO"
+  LOG_CONSOLE: "true"
+  LOG_FILE: "false"   # use stdout/stderr in K8s — collect via Cloud Logging
+  LOG_COLORS: "false"
+
+  # FL backend config
+  NODE_ROLE: "hybrid"
+  FL_BACKEND_HOST: "0.0.0.0"
+  FL_BACKEND_PORT: "8500"
+  BACKEND_API_URL: "http://medverify-backend-service:8000"
+  FL_CLIENT_BASE_PORT: "8600"
+  ROUND_INTERVAL_MINUTES: "60"
+  STATUS_POLL_INTERVAL: "5"

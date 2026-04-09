@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: medverify-fl-backend
+  namespace: medverify
+  labels:
+    app: medverify-fl-backend
+    tier: fl-microservice
+spec:
+  replicas: 3    # 3 replicas — one per hospital client node in base config
+  selector:
+    matchLabels:
+      app: medverify-fl-backend
+  template:
+    metadata:
+      labels:
+        app: medverify-fl-backend
+        tier: fl-microservice
+    spec:
+      containers:
+        - name: fl-backend
+          image: gcr.io/YOUR_GCP_PROJECT/medverify-fl-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8500
+          envFrom:
+            - configMapRef:
+                name: medverify-config
+          env:
+            - name: PRIVATE_KEY_HOSPITAL_A
+              valueFrom:
+                secretKeyRef:
+                  name: medverify-secrets
+                  key: PRIVATE_KEY_HOSPITAL_A
+            - name: PRIVATE_KEY_HOSPITAL_B
+              valueFrom:
+                secretKeyRef:
+                  name: medverify-secrets
+                  key: PRIVATE_KEY_HOSPITAL_B
+            - name: PRIVATE_KEY_HOSPITAL_C
+              valueFrom:
+                secretKeyRef:
+                  name: medverify-secrets
+                  key: PRIVATE_KEY_HOSPITAL_C
+          volumeMounts:
+            - name: fl-models
+              mountPath: /app/tmp_models
+          # ── Liveness probe ────────────────────────────────────────────────
+          livenessProbe:
+            httpGet:
+              path: /fl/status
+              port: 8500
+            initialDelaySeconds: 40
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 10
+          # ── Readiness probe ───────────────────────────────────────────────
+          readinessProbe:
+            httpGet:
+              path: /fl/status
+              port: 8500
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 10
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"     # training is CPU-bound in absence of GPU nodes
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+      volumes:
+        - name: fl-models
+          emptyDir: {}        # ephemeral; model weights committed to blockchain, not K8s storage
+      terminationGracePeriodSeconds: 60   # allow long-running training to finish
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: medverify-fl-service
+  namespace: medverify
+  labels:
+    app: medverify-fl-backend
+spec:
+  selector:
+    app: medverify-fl-backend
+  ports:
+    - protocol: TCP
+      port: 8500
+      targetPort: 8500
+  type: ClusterIP    # internal; fl-backend pods communicate directly with backend

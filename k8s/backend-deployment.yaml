@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: medverify-backend
+  namespace: medverify
+  labels:
+    app: medverify-backend
+    tier: blockchain-api
+spec:
+  replicas: 2      # 2 replicas for high availability
+  selector:
+    matchLabels:
+      app: medverify-backend
+  template:
+    metadata:
+      labels:
+        app: medverify-backend
+        tier: blockchain-api
+    spec:
+      containers:
+        - name: backend
+          image: gcr.io/YOUR_GCP_PROJECT/medverify-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: medverify-config
+          env:
+            - name: MONGO_USER
+              valueFrom:
+                secretKeyRef:
+                  name: medverify-secrets
+                  key: MONGO_USER
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: medverify-secrets
+                  key: MONGO_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: medverify-secrets
+                  key: JWT_SECRET
+          # ── Liveness probe: restart if the app deadlocks ───────────────────
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+            timeoutSeconds: 5
+          # ── Readiness probe: no traffic until DB indexes are ready ─────────
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 5
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      # Graceful shutdown — give uvicorn workers time to finish in-flight requests
+      terminationGracePeriodSeconds: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: medverify-backend-service
+  namespace: medverify
+  labels:
+    app: medverify-backend
+spec:
+  selector:
+    app: medverify-backend
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: LoadBalancer   # exposes DPoS API for FL nodes and external tooling

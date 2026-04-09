@@ -1,0 +1,20 @@
+# Core Framework
+fastapi==0.115.2
+uvicorn[standard]==0.30.6
+
+# ML / Torch
+torch==2.4.1
+torchvision==0.19.1
+
+# Networking / HTTP
+requests==2.32.3
+
+# Utilities
+pydantic==2.9.2
+python-dotenv==1.0.1
+
+# Dataset / Hugging Face
+datasets==3.0.2          # For loading the Hemg/Brain-Tumor-MRI-Dataset
+pillow==10.4.0           # Image processing support
+tqdm==4.66.5             # Progress bars during training
+schedule

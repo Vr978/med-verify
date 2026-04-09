@@ -1,0 +1,71 @@
+# ─── HorizontalPodAutoscaler for FL Backend ───────────────────────────────────
+# Scales FL training pods from 2 to 10 based on CPU utilisation.
+# During a heavy training round (800+ model updates), pods scale out to
+# distribute the aggregation workload across additional compute nodes.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: fl-backend-hpa
+  namespace: medverify
+  labels:
+    app: medverify-fl-backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: medverify-fl-backend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70   # scale up when avg CPU > 70%
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80   # scale up when avg memory > 80%
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60      # avoid thrashing during burst
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30               # add max 2 pods every 30s
+    scaleDown:
+      stabilizationWindowSeconds: 300     # keep pods alive 5min after load drops
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+
+---
+# ─── HPA for DPoS Blockchain API ──────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: medverify
+  labels:
+    app: medverify-backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: medverify-backend
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
