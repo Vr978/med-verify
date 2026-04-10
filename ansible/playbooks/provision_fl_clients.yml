@@ -1,0 +1,221 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# MedVerify — FL Client Node Provisioning Playbook
+#
+# Purpose
+# ───────
+# Provisions on-premise hospital nodes that cannot run inside GKE due to
+# medical data residency regulations or air-gapped network requirements.
+# Each hospital's bare-metal / VM server is configured to run the
+# MedVerify FL client microservice as a managed systemd service.
+#
+# What this playbook does
+# ───────────────────────
+#  1. System packages  — Python 3.11, pip, Docker CE, git
+#  2. Python deps      — installs fl_backend/requirements.txt in a venv
+#  3. App deployment   — syncs fl_backend/ source to /opt/medverify/fl_client
+#  4. Environment      — renders .env from Vault / Ansible vars into place
+#  5. systemd service  — installs medverify-fl-client.service (auto-restart)
+#  6. Firewall         — opens only the FL client port (8600+)
+#  7. Smoke test       — hits /fl/status and asserts {"status": "running"}
+#
+# Usage
+# ─────
+#   # Provision all hospital nodes
+#   ansible-playbook playbooks/provision_fl_clients.yml
+#
+#   # Provision a single hospital (e.g. after adding a new node)
+#   ansible-playbook playbooks/provision_fl_clients.yml --limit hospital_a
+#
+#   # Dry-run (check mode — no changes made)
+#   ansible-playbook playbooks/provision_fl_clients.yml --check
+#
+#   # Override aggregator URL at runtime
+#   ansible-playbook playbooks/provision_fl_clients.yml \
+#     -e "fl_backend_aggregator_url=http://35.200.1.100:8500"
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: Provision MedVerify FL Client Nodes
+  hosts: fl_clients
+  become: true          # sudo — needed for apt, systemd, ufw
+  gather_facts: true
+
+  vars:
+    app_dir: /opt/medverify/fl_client
+    venv_dir: /opt/medverify/venv
+    service_name: medverify-fl-client
+    log_dir: /var/log/medverify
+
+  pre_tasks:
+    - name: Assert minimum OS requirement (Ubuntu 20.04+)
+      assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+          - ansible_distribution_major_version | int >= 20
+        fail_msg: "MedVerify FL client requires Ubuntu 20.04 or later."
+
+    - name: Update apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 3600   # skip update if cache < 1 hour old
+
+  tasks:
+
+    # ── 1. System packages ────────────────────────────────────────────────────
+    - name: Install system dependencies
+      apt:
+        name:
+          - python3.11
+          - python3.11-venv
+          - python3-pip
+          - git
+          - curl
+          - ufw
+          - libgl1-mesa-glx    # required by torchvision
+          - libglib2.0-0
+        state: present
+
+    - name: Install Docker CE
+      block:
+        - name: Add Docker GPG key
+          apt_key:
+            url: https://download.docker.com/linux/ubuntu/gpg
+            state: present
+
+        - name: Add Docker apt repository
+          apt_repository:
+            repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+            state: present
+
+        - name: Install docker-ce
+          apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+            state: present
+
+        - name: Add ubuntu user to docker group
+          user:
+            name: ubuntu
+            groups: docker
+            append: true
+
+    # ── 2. Create app directories ─────────────────────────────────────────────
+    - name: Create application and log directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+      loop:
+        - "{{ app_dir }}"
+        - "{{ log_dir }}"
+        - "{{ app_dir }}/tmp_models"
+        - "{{ app_dir }}/dataset_cache"
+
+    # ── 3. Sync FL client source ──────────────────────────────────────────────
+    - name: Sync fl_backend source to node
+      synchronize:
+        src: "{{ playbook_dir }}/../fl_backend/"
+        dest: "{{ app_dir }}/"
+        delete: true
+        rsync_opts:
+          - "--exclude=__pycache__"
+          - "--exclude=*.pyc"
+          - "--exclude=.env"
+          - "--exclude=tmp_models/"
+          - "--exclude=dataset_cache/"
+      notify: Restart FL client service
+
+    # ── 4. Python virtual environment + dependencies ──────────────────────────
+    - name: Create Python virtual environment
+      command: python3.11 -m venv {{ venv_dir }}
+      args:
+        creates: "{{ venv_dir }}/bin/activate"
+
+    - name: Install Python dependencies into venv
+      pip:
+        requirements: "{{ app_dir }}/requirements.txt"
+        virtualenv: "{{ venv_dir }}"
+        state: present
+      notify: Restart FL client service
+
+    # ── 5. Environment file ───────────────────────────────────────────────────
+    - name: Render .env file from template
+      template:
+        src: templates/fl_client.env.j2
+        dest: "{{ app_dir }}/.env"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0600"   # secrets — readable only by owner
+      notify: Restart FL client service
+
+    # ── 6. systemd service ────────────────────────────────────────────────────
+    - name: Install medverify-fl-client systemd service
+      template:
+        src: templates/fl_client.service.j2
+        dest: /etc/systemd/system/{{ service_name }}.service
+        mode: "0644"
+      notify:
+        - Reload systemd
+        - Restart FL client service
+
+    - name: Enable and start FL client service
+      systemd:
+        name: "{{ service_name }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    # ── 7. Firewall rules ─────────────────────────────────────────────────────
+    - name: Allow SSH through firewall
+      ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+
+    - name: Allow FL client port
+      ufw:
+        rule: allow
+        port: "{{ client_port }}"
+        proto: tcp
+
+    - name: Enable UFW firewall (default deny inbound)
+      ufw:
+        state: enabled
+        default: deny
+        direction: incoming
+
+    # ── 8. Smoke test ─────────────────────────────────────────────────────────
+    - name: Wait for FL client service to be ready
+      wait_for:
+        port: "{{ client_port }}"
+        host: "{{ ansible_host }}"
+        delay: 5
+        timeout: 60
+
+    - name: Smoke test — assert /fl/status returns running
+      uri:
+        url: "http://{{ ansible_host }}:{{ client_port }}/fl/status"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: status_response
+      failed_when: status_response.json.status != "running"
+
+    - name: Print FL client status
+      debug:
+        msg: "✅ {{ inventory_hostname }} is live — role={{ status_response.json.role }}, port={{ client_port }}"
+
+  # ── Handlers (triggered by notify) ─────────────────────────────────────────
+  handlers:
+    - name: Reload systemd
+      systemd:
+        daemon_reload: true
+
+    - name: Restart FL client service
+      systemd:
+        name: "{{ service_name }}"
+        state: restarted

@@ -1,0 +1,40 @@
+[Unit]
+Description=MedVerify FL Client — {{ node_id }} (FastAPI :{{ client_port }})
+Documentation=https://github.com/Vr978/med-verify
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory={{ app_dir }}
+
+# Load environment from rendered .env file
+EnvironmentFile={{ app_dir }}/.env
+
+# Start uvicorn via the venv Python
+ExecStart={{ venv_dir }}/bin/uvicorn fl_backend.main:app \
+    --host 0.0.0.0 \
+    --port {{ client_port }} \
+    --workers 2 \
+    --log-level info
+
+# Restart policy — ensure the FL client always comes back after crashes
+Restart=on-failure
+RestartSec=10s
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Resource limits — keep FL client from consuming the whole node
+LimitNOFILE=65536
+MemoryMax=4G
+CPUQuota=80%
+
+# Logging — captured by journald; forward to /var/log/medverify/ via logrotate
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=medverify-fl-{{ node_id }}
+
+[Install]
+WantedBy=multi-user.target
